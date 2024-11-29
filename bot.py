@@ -4,7 +4,11 @@ from random import choice
 
 import re
 
-from db import *
+from telebot import types
+from telebot.storage import StateMemoryStorage
+from telebot.states import StatesGroup, State
+
+from db_sql_alchemy import *
 from dotenv import load_dotenv
 import telebot
 
@@ -12,15 +16,15 @@ from telebot.types import KeyboardButtonRequestChat, ReplyKeyboardMarkup, Keyboa
     InlineKeyboardButton, KeyboardButtonPollType
 
 load_dotenv()
-
+storage = StateMemoryStorage()
 TOKEN = os.getenv('TOKEN')
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, state_storage=storage)
 logger = telebot.logger
 
+user_data = {}
 main_menu_button = KeyboardButton("Вернуться в главное меню")
 channels_button = KeyboardButton("Управление каналами", )
-quizzes_button = KeyboardButton("Создать и отправить викторину",
-                                request_poll=KeyboardButtonPollType('quiz'))
+quizzes_button = KeyboardButton("Создать и отправить викторину")
 
 lotteries_button = KeyboardButton("Управление розыгрышами")
 add_lotteries_button = KeyboardButton('Добавить розыгрыш')
@@ -38,11 +42,16 @@ channels_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(add_channel_bu
 lotteries_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(add_lotteries_button, list_lotteries_button).add(
     main_menu_button
 )
+get_quiz_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton('Собрать викторину'))
+
+
+class QuizForm(StatesGroup):
+    add_question = State()
+    add_answer = State()
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    print(message)
     if not is_user(message.from_user.id):
         add_user(message.from_user.id, message.from_user.username)
     bot.send_message(message.chat.id,
@@ -51,17 +60,78 @@ def start(message):
                      )
 
 
-@bot.message_handler(content_types=['poll'])
-def add_poll(message):
-    question = message.poll.question
-    options = message.poll.options
-    correct_option_id = message.poll.correct_option_id
-    explanation = message.poll.explanation
-    bot.send_poll(message.chat.id,
-                  question=question,
-                  options=options,
-                  correct_option_id=correct_option_id,
-                  explanation=explanation)
+@bot.message_handler(func=lambda message: message.text == quizzes_button.text)
+def create_quiz(message):
+    bot.send_message(message.chat.id, "Введите вопрос для викторины:")
+    bot.register_next_step_handler(message, question_handler)
+
+
+def question_handler(message):
+    question = message.text
+    bot.send_message(message.chat.id, f"Вопрос '{question}' сохранен. Теперь напиши ответ на него.")
+    user_data[message.from_user.id] = {'question': question, 'answers': []}
+    bot.register_next_step_handler(message, answers_handler)
+    # Сохраняем вопрос в хранилище
+
+
+def answers_handler(message):
+    if message.text != "Собрать викторину":
+        answer = message.text
+        bot.send_message(message.chat.id,
+                         f"Вариант ответа {answer} записан.\n "
+                         f"Можно добавить ещё один вариант, либо нажать кнопку 'собрать викторину'",
+                         reply_markup=get_quiz_keyboard)
+        user_data.get(message.from_user.id).get('answers').append(answer)
+        bot.register_next_step_handler(message, answers_handler)
+    else:
+        markup = InlineKeyboardMarkup()
+        for answer in user_data.get(message.from_user.id).get('answers'):
+            markup.add(InlineKeyboardButton(f"{answer}", callback_data=f"answer {answer.index(answer)}"))
+        bot.send_message(message.from_user.id, f"Выберите правильный вариант ответа:", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda callback: callback.data.startswith('answer'))
+def add_correct_answer(callback):
+    data = user_data.get(callback.from_user.id)
+    data['right_answer_number'] = callback.data.split()[1]
+    add_quiz_to_db(callback.from_user.id, data.get('question'), data.get('answers'), data.get('right_answer_number'))
+    quiz = get_last_user_quiz(callback.from_user.id)
+    bot.delete_message(callback.message.chat.id, callback.message.id)
+    bot.send_message(callback.message.chat.id, "В какие каналы отправить викторину?",
+                     reply_markup=get_channel_list_keyboard(callback.message,
+                                                            'send_quiz',
+                                                            chat=callback.message.chat,
+                                                            item=quiz.id))
+
+
+@bot.callback_query_handler(func=lambda callback: callback.data.startswith('send_quiz'))
+def send_quiz_to_channel(callback):
+    quiz = get_quiz(callback.data.split()[3])
+    channel_id = callback.data.split()[2]
+    answers = quiz.answers.replace('[', '').replace(']', '').split(', ')
+    if check_quiz_in_channel(quiz.id, channel_id):
+        bot.answer_callback_query(callback.id, "Эта викторина уже отправлена в этот канал")
+        return
+    markup = InlineKeyboardMarkup()
+    for answer in answers:
+        if answers.index(answer) == quiz.right_answer_ind:
+            markup.add(InlineKeyboardButton(f'{answer}', callback_data=f'user_answer {quiz.id} 1'))
+        else:
+            markup.add(InlineKeyboardButton(f'{answer}', callback_data=f'user_answer {quiz.id}'))
+    bot.send_message(channel_id, quiz.question, reply_markup=markup)
+    add_quiz_to_channel(quiz.id, channel_id)
+
+
+@bot.callback_query_handler(func=lambda callback: callback.data.startswith('user_answer'))
+def send_quiz_to_channel(callback):
+    quiz = get_quiz(callback.data.split()[1])
+    if not check_user_in_quiz(quiz.id, callback.from_user.id):
+        bot.answer_callback_query(callback.id, "Ваш ответ записан!")
+        add_user_quiz_answer(quiz.id, callback.from_user.id, right_answer=(len(callback.data.split()) == 3))
+    else:
+        bot.answer_callback_query(callback.id, "Вы уже отвечали на этот вопрос!")
+
+        # bot.answer_callback_query(callback.id, "Время на ответ уже истекло")
 
 
 @bot.message_handler(func=lambda message: message.text == channels_button.text)
@@ -85,26 +155,23 @@ def lotteries_menu(message):
 @bot.message_handler(func=lambda message: message.text == add_lotteries_button.text)
 def add_lottery(message):
     bot.send_message(message.chat.id,
-                     'Добавление розыгрыша. Также укажите дату окончания розыгрыша DD.MM.YYYY HH:MM')
+                     'Добавление розыгрыша. Также укажите дату окончания розыгрыша DD.MM.YYYY')
     bot.register_next_step_handler(message, process_lottery_info)
 
 
 def process_lottery_info(message):
     try:
         text = message.text
-        date_pattern = r'(d{2}.d{2}.d{4}(?: d{2}:d{2})?)'
-        end_time = re.search(date_pattern, text).group(0)
-        if len(end_time) > 10:
-            end_time = datetime.strptime(end_time, '%d.%m.%Y %H:%M').timestamp()
-        else:
-            end_time = datetime.strptime(end_time, '%d.%m.%Y').timestamp()
+        date_pattern = r'(0[1-9]|[12][0-9]|3[01])[.](0[1-9]|1[012])[.](19|20)\d\d'
+        end_time = re.search(date_pattern, text).group()
+        end_time = datetime.strptime(end_time, '%d.%m.%Y').timestamp()
         add_lottery_to_db(text, message.from_user.id, end_time)
         lottery_id = get_lotteries(message.from_user.id)[-1][0]
         send_button = InlineKeyboardButton('Отправить в канал', callback_data=f'send {lottery_id}')
         lottery_action_keyboard = InlineKeyboardMarkup().add(send_button)
-        bot.send_message(message.chat.id, 'Розыгрш создан!', reply_markup=lottery_action_keyboard)
+        bot.send_message(message.chat.id, text, reply_markup=lottery_action_keyboard)
     except Exception as e:
-        print(e)
+        bot.send_message(message.chat.id, 'Не указана дата, попробуйте создать розыгрыш еще раз')
 
 
 @bot.message_handler(func=lambda message: message.text == list_lotteries_button.text)
@@ -112,7 +179,8 @@ def list_lottery(message, chat=None):
     lotteries = get_lotteries(message.from_user.id) if not chat else get_lotteries(chat.id)
     inline_keyboard = InlineKeyboardMarkup()
     for lottery in lotteries:
-        inline_keyboard.add(InlineKeyboardButton(f'{lottery[1][:50]}...', callback_data=f'get_lottery {lottery[0]}'))
+        inline_keyboard.add(
+            InlineKeyboardButton(f'{lottery.context_lottery[:50]}...', callback_data=f'get_lottery {lottery.id}'))
     if not chat:
         bot.send_message(message.chat.id, 'Список созданных розыгрышей',
                          reply_markup=inline_keyboard)
@@ -131,8 +199,8 @@ def get_channel_list_keyboard(message, type_callback, chat=None, item=None):
     channels = get_channels(message.from_user.id) if not chat else get_channels(chat.id)
     item_id = item if item else None
     channels_list_inline_markup = InlineKeyboardMarkup()
-    for channel_id in channels:
-        channel = bot.get_chat(channel_id[0])
+    for channel in channels:
+        channel = bot.get_chat(channel.id)
         callback_data = f'{type_callback} channel {channel.id} {item_id}' if item else f'{type_callback} channel {channel.id}'
         button = InlineKeyboardButton(channel.username, callback_data=callback_data)
         channels_list_inline_markup.add(button)
@@ -157,13 +225,13 @@ def channels_list(message):
 def end_lottery_callback(callback):
     lottery_id = int(callback.data.split()[1])
     lottery = get_lottery(lottery_id)
-    if lottery[3] <= datetime.now().timestamp() and lottery[4]:
+    if lottery.date_end_of_lot <= datetime.now().timestamp() and lottery.is_active:
         channels = get_channels_with_lottery(lottery_id)
         winner = get_winner_in_lottery(lottery_id)
         if winner and channels:
             username = get_user(winner[0])
             for channel in channels:
-                bot.send_message(channel[0], f'Победитель розыгрыша @{username[1]}')
+                bot.send_message(channel.id, f'Победитель розыгрыша @{username.username}')
         else:
             bot.answer_callback_query(callback.id, "К сожалению никто не принял участи в розыгрше")
         change_lottery_status(lottery_id, 0)
@@ -207,7 +275,7 @@ def delete_channel_from_bot(callback):
 def delete_channel_from_bot(callback):
     lottery_id = int(callback.data.split()[1])
     lottery = get_lottery(lottery_id)
-    if lottery[4]:
+    if lottery.is_active:
         bot.answer_callback_query(callback.id, "Нельзя удалить активный розыгрыш!")
     else:
         delete_lottery(lottery_id)
@@ -220,13 +288,13 @@ def send_lottery_in_select_channel(callback):
     lottery_id = int(callback.data.split()[1])
     bot.delete_message(callback.message.chat.id, callback.message.id)
     lottery = get_lottery(lottery_id)
-    end_time = datetime.fromtimestamp(lottery[3])
+    end_time = datetime.fromtimestamp(lottery.date_end_of_lot)
     send_button = InlineKeyboardButton('Отправить в канал', callback_data=f'send {lottery_id}')
     del_lottery_button = InlineKeyboardButton('Удалить розыгрыш', callback_data=f'del_lottery {lottery_id}')
     end_lottery_button = InlineKeyboardButton('Подвести итоги розыгрыша', callback_data=f'end_lottery {lottery_id}')
     lottery_action_keyboard = InlineKeyboardMarkup().add(send_button, end_lottery_button).add(
         back_to_lottery_list_button, del_lottery_button)
-    bot.send_message(callback.message.chat.id, text=f'{lottery[1]} Дата окончания {end_time}',
+    bot.send_message(callback.message.chat.id, text=f'{lottery.context_lottery} Дата окончания {end_time}',
                      reply_markup=lottery_action_keyboard)
 
 
@@ -261,7 +329,6 @@ def callback_join_to_lottery(callback):
     lottery = get_lottery(lottery_id)
     lottery_status = lottery[4]
     lottery_end_time = lottery[3]
-    print(lottery)
     if not check_user_in_lottery(lottery_id, user_id) and \
             lottery_end_time >= datetime.now().timestamp() and lottery_status:
         join_user_to_lottery(user_id, lottery_id)

@@ -2,3 +2,4 @@
 .idea
 venv
 my_database.db
+.gitconfig
