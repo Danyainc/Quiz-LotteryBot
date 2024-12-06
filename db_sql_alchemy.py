@@ -256,31 +256,17 @@ def check_quiz_in_channel(quiz_id, channel_id):
 
 
 def get_user_with_most_correct_answers(channel_id):
-    for query in session.query(UserQuizzes).filter(UserQuizzes.channel_id == channel_id).all():
-        print(query.user_id, end=' ')
-        print(query.right_answer, end=' ')
-        print(query.channel_id, end=' ')
-        print(query.quiz_id)
     user_with_most_correct_answers = (
         session.query(
             UserQuizzes.user_id,
             func.count(UserQuizzes.id).label('correct_answers_count')
         )
-        .filter(UserQuizzes.right_answer == True)  # Фильтруем только правильные ответы
-        .group_by(UserQuizzes.user_id)  # Группируем по user_id
-        .order_by(func.count(UserQuizzes.id).desc())  # Сортируем по количеству правильных ответов
-        .first()  # Получаем первого пользователя с наибольшим количеством правильных ответов
+        .filter(UserQuizzes.right_answer == True)
+        .group_by(UserQuizzes.user_id)
+        .order_by(func.count(UserQuizzes.id).desc())
+        .first()
     )
-    print((
-        session.query(
-            UserQuizzes.user_id,
-            func.count(UserQuizzes.id).label('correct_answers_count')
-        )
-        .filter(UserQuizzes.right_answer == True)  # Фильтруем только правильные ответы
-        .group_by(UserQuizzes.user_id)  # Группируем по user_id
-        .order_by(func.count(UserQuizzes.id).desc())  # Сортируем по количеству правильных ответов
-        .first()  # Получаем первого пользователя с наибольшим количеством правильных ответов
-    ))
+
     if user_with_most_correct_answers:
         user_id, correct_answers_count = user_with_most_correct_answers
         return user_id, correct_answers_count
@@ -290,9 +276,4 @@ def get_user_with_most_correct_answers(channel_id):
 
 def reset_correct_answers(channel_id):
     session.query(UserQuizzes).filter(UserQuizzes.channel_id == channel_id).update({UserQuizzes.right_answer: False})
-    for query in session.query(UserQuizzes).filter(UserQuizzes.channel_id == channel_id).all():
-        print(query.user_id, end=' ')
-        print(query.right_answer, end=' ')
-        print(query.channel_id, end=' ')
-        print(query.quiz_id)
 

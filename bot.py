@@ -154,7 +154,6 @@ def send_quiz_to_channel(callback):
 @bot.callback_query_handler(func=lambda callback: callback.data.startswith('user_answer'))
 def send_quiz_to_channel(callback):
     user_id = callback.from_user.id
-    print(callback.data, callback.from_user.id)
     quiz = get_quiz(callback.data.split()[1])
     if not get_user(user_id):
         add_user(user_id, callback.from_user.username)
@@ -184,7 +183,6 @@ def channels_menu(message):
 def back_to_lottery_list(callback):
     channel_id = callback.data.split()[1]
     user_id, right_answers_count = get_user_with_most_correct_answers(channel_id)
-    print(user_id)
     if user_id:
         user = get_user(user_id)
         bot.send_message(channel_id, f'Победитель викторин этого канала - @{user.username}. \n'
@@ -223,7 +221,6 @@ def process_lottery_info(message):
         text = message.text
         date_pattern = r'\d{2}.\d{2}.\d{4}\s\d{2}:\d{2}.*'
         end_time = re.search(date_pattern, text).group()
-        print(end_time)
         end_time = datetime.strptime(end_time, '%d.%m.%Y %H:%M').timestamp()
         add_lottery_to_db(text, message.from_user.id, end_time)
         lottery = get_lotteries(message.from_user.id)[-1]
@@ -232,7 +229,6 @@ def process_lottery_info(message):
         bot.send_message(message.chat.id, text, reply_markup=lottery_action_keyboard)
     except Exception as e:
         bot.send_message(message.chat.id, 'Не указана дата, попробуйте создать розыгрыш еще раз')
-        print(e)
         bot.register_next_step_handler(message, process_lottery_info)
 
 
