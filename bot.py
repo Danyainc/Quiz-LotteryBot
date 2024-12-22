@@ -77,7 +77,7 @@ def add_correct_answer(callback):
 
 
 @bot.message_handler(func=lambda message: message.text == quizzes_button.text)
-def create_quiz(message):
+def quiz_menu_handler(message):
     bot.send_message(message.chat.id, "Меню управления викторинами", reply_markup=quizzes_menu_keyboard)
 
 
@@ -165,7 +165,6 @@ def send_quiz_to_channel(callback):
         bot.answer_callback_query(callback.id, "Вы уже отвечали на этот вопрос!")
 
 
-
 @bot.message_handler(func=lambda message: message.text == best_in_quizz.text)
 def channels_menu(message):
     channels = get_channels(message.from_user.id)
@@ -187,6 +186,7 @@ def back_to_lottery_list(callback):
         user = get_user(user_id)
         bot.send_message(channel_id, f'Победитель викторин этого канала - @{user.username}. \n'
                                      f'Колличество правильных ответов {right_answers_count}')
+        reset_correct_answers(channel_id)
     else:
         bot.answer_callback_query(callback.id, "Никто не принимал участие в викторинах в последнее время(")
 
