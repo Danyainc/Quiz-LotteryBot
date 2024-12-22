@@ -1,0 +1,9 @@
+version: 1
+services:
+  - type: web
+    name: my-telegram-bot
+    env: python
+    runtime: python3.9
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    autoDeploy: true
