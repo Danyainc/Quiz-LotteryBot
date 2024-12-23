@@ -196,7 +196,7 @@ def get_users_in_lottery(lottery_id):
     users = session.query(UserLottery.user_id).filter(
         UserLottery.lottery_id == lottery_id
     ).all()
-    return [user.user_id for user in users]
+    return [user for user in users]
 
 
 def delete_lottery(lottery_id):
